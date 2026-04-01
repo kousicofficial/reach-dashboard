@@ -53,24 +53,36 @@ const formatNumber = (val) => {
 // USER REQUESTED FIX: parseSheetDate
 function parseCustomDate(dateStr) {
   if (!dateStr) return null;
-  if (dateStr instanceof Date) return dateStr;
-  const s = dateStr.trim();
+  if (dateStr instanceof Date) return new Date(dateStr.getFullYear(), dateStr.getMonth(), dateStr.getDate());
+  const s = dateStr.toString().trim();
   if (!s || s.toLowerCase() === 'no date') return null;
 
-  // Expected format: MM/DD/YYYY
+  // Expected format: MM/DD/YYYY (e.g. 3/24/2026)
   const parts = s.split(/[-/.]/);
   if (parts.length !== 3) return null;
 
-  const m = parseInt(parts[0]);
-  const d = parseInt(parts[1]);
-  const y = parseInt(parts[2]);
+  const m = parseInt(parts[0], 10);
+  const d = parseInt(parts[1], 10);
+  const y = parseInt(parts[2], 10);
 
-  // Handle 2-digit year (if any)
   const fullYear = y < 100 ? 2000 + y : y;
+  
+  // Return local date at midnight to ensure pure date comparison
+  return new Date(fullYear, m - 1, d);
+}
 
-  // Use (Year, Month-1, Day) constructor to avoid UTC/timezone issues
-  const result = new Date(fullYear, m - 1, d);
-  return isNaN(result.getTime()) ? null : result;
+function normalizeInputDate(dateStr) {
+  if (!dateStr) return null;
+  // input date is typically YYYY-MM-DD
+  const parts = dateStr.split('-');
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    const d = parseInt(parts[2], 10);
+    return new Date(y, m - 1, d);
+  }
+  const d = new Date(dateStr);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
 }
 
 const formatDate = (dateStr) => {
@@ -274,25 +286,23 @@ const App = () => {
     if (!data.length) return [];
 
     const term = searchTerm.toLowerCase().trim();
-    const fromDate = startDate ? new Date(startDate) : null;
-    const toDate = endDate ? new Date(endDate) : null;
-
-    if (fromDate) fromDate.setHours(0, 0, 0, 0);
-    if (toDate) toDate.setHours(23, 59, 59, 999);
+    const start = normalizeInputDate(startDate);
+    const end = normalizeInputDate(endDate);
 
     let result = data.filter(item => {
-      // 1. Date filtering (Proper parsing of MM/DD/YYYY)
-      const recordDate = parseCustomDate(item.date);
+      // 1. Date filtering (Strict Local Date comparison)
+      const rowDate = parseCustomDate(item.date);
       
-      // LOGGING FOR DEBUGGING
-      if (startDate || endDate) {
-        // console.log(`Comparing RowDate: ${recordDate?.toISOString()} with Filter: ${fromDate?.toISOString()} to ${toDate?.toISOString()}`);
-      }
+      if (!rowDate) return true; // Show rows with missing dates as requested
 
-      if (!recordDate) return false;
+      // Debugging logs for first match or if filters active
+      if (startDate || endDate) {
+        // Only log matching or close dates to avoid console spam
+        // console.log(`Row: ${rowDate.toDateString()} | Start: ${start?.toDateString()} | End: ${end?.toDateString()}`);
+      }
       
-      if (fromDate && recordDate < fromDate) return false;
-      if (toDate && recordDate > toDate) return false;
+      if (start && rowDate < start) return false;
+      if (end && rowDate > end) return false;
 
       // 2. Status filter
       if (statusFilter !== 'All Status') {
@@ -307,7 +317,7 @@ const App = () => {
       return true;
     });
 
-    console.log(`Filtered Data: ${result.length} rows (Start: ${startDate}, End: ${endDate}, Status: ${statusFilter}, Search: ${searchTerm})`);
+    console.log(`Filter Stats: ${result.length} active rows. [Range: ${start?.toDateString() || 'All'} - ${end?.toDateString() || 'All'}]`);
 
     if (sortConfig.key) {
       result = [...result].sort((a, b) => {

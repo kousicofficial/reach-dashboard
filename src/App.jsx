@@ -168,7 +168,8 @@ const App = () => {
       }
 
       // STEP 1: STANDARDIZE DATA (CRITICAL)
-      const cleaned = response.data.map((item, index) => {
+      const rawData = response.data || [];
+      const cleaned = rawData.map((item, index) => {
         const campaign = item["Campaign name"] || item["Campaign"] || "Unknown";
 
         const leads = parseNumber(item["Leads"]);
@@ -616,6 +617,18 @@ const App = () => {
                   </button>
                   <button
                     onClick={() => {
+                      const yesterday = new Date();
+                      yesterday.setDate(yesterday.getDate() - 1);
+                      const dStr = yesterday.toISOString().split('T')[0];
+                      setStartDate(dStr);
+                      setEndDate(dStr);
+                    }}
+                    className="px-2 py-1 text-[10px] font-bold uppercase rounded bg-slate-100 dark:bg-slate-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 text-slate-600 dark:text-slate-400 transition-colors"
+                  >
+                    Yesterday
+                  </button>
+                  <button
+                    onClick={() => {
                       const d = new Date();
                       d.setDate(d.getDate() - 7);
                       setStartDate(d.toISOString().split('T')[0]);
@@ -624,6 +637,17 @@ const App = () => {
                     className="px-2 py-1 text-[10px] font-bold uppercase rounded bg-slate-100 dark:bg-slate-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 text-slate-600 dark:text-slate-400 transition-colors"
                   >
                     7D
+                  </button>
+                  <button
+                    onClick={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() - 14);
+                      setStartDate(d.toISOString().split('T')[0]);
+                      setEndDate(new Date().toISOString().split('T')[0]);
+                    }}
+                    className="px-2 py-1 text-[10px] font-bold uppercase rounded bg-slate-100 dark:bg-slate-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 text-slate-600 dark:text-slate-400 transition-colors"
+                  >
+                    14D
                   </button>
                   <button
                     onClick={() => {
@@ -877,8 +901,8 @@ const App = () => {
                     <td className="py-4 px-4 text-sm font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800">
                       {formatNumber(campaign.leads)}
                     </td>
-                    <td className="py-4 px-4 text-sm font-semibold text-primary-600 dark:text-primary-400 border-b border-slate-100 dark:border-slate-800">
-                      {formatCurrency(campaign.spend / (campaign.leads || 1))}
+                    <td className="py-4 px-4 text-sm font-semibold text-primary-600 dark:text-primary-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
+                      {campaign.leads > 0 ? formatCurrency(campaign.spend / campaign.leads) : formatCurrency(0)}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
                       {formatNumber(campaign.reach)}

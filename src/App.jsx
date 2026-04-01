@@ -167,45 +167,44 @@ const App = () => {
         return;
       }
 
-      console.log(`[SYNC] Raw data length for ${activeDataset}:`, response.data.length);
+      // STEP 1: STANDARDIZE DATA (CRITICAL)
+      const cleaned = response.data.map((item, index) => {
+        const campaign = item["Campaign name"] || item["Campaign"] || "Unknown";
 
-      // Clean and Deduplicate
-      const seen = new Set();
-      const cleaned = response.data
-        .filter(item => {
-          if (!item) return false;
-          const key = `${item.Date}-${item.Campaign}-${item.Reach}-${item.Spend}`;
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        })
-        .map((item, index) => {
-          const campaign = item?.Campaign || item?.['Campaign name'] || item?.['Campaign Name'] || 'Unnamed';
-          const reach = parseNumber(item?.Reach || item?.reach || 0);
-          const clicks = parseNumber(item?.Clicks || item?.['Link clicks'] || item?.clicks || 0);
-          const leads = parseNumber(item?.Leads || item?.leads || item?.['Total Leads'] || 0);
-          const spend = parseNumber(item?.Spend || item?.Cost || item?.['Daily ad set budget'] || item?.spend || 0);
-          const cpl = leads > 0 ? (spend / leads) : (parseNumber(item?.['Cost per lead'] || item?.['CPL'] || 0));
-          const statusRaw = item?.['Campaign configured status'] || item?.Status || item?.status || 'Active';
+        const leads = parseNumber(item["Leads"]);
+        const spend = parseNumber(item["Daily ad set budget"] || item["Spend"]);
+        const clicks = parseNumber(item["Link clicks"]);
+        const reach = parseNumber(item["Reach"]);
 
-          return {
-            ...item,
-            id: `${activeDataset}-${index}`,
-            name: campaign,
-            campaign,
-            status: statusRaw,
-            leads,
-            cpl,
-            reach,
-            clicks,
-            spend,
-            region: item?.Region || item?.region || 'Unknown',
-            date: item?.Date || item?.date || 'No Date',
-            normalizedDate: convertSheetDate(item?.Date || item?.date)
-          };
-        });
+        const normalizedDate = convertSheetDate(item["Date"]);
 
-      setData(cleaned);
+        return {
+          id: `${activeDataset}-${index}`,
+          campaign,
+          leads,
+          spend,
+          clicks,
+          reach,
+          status: item["Campaign configured status"] || "Active",
+          region: item["Region"] || "Unknown",
+          normalizedDate
+        };
+      });
+
+      // STEP 2: REMOVE DUPLICATES (IMPORTANT)
+      const uniqueMap = new Map();
+
+      cleaned.forEach(item => {
+        const key = `${item.campaign}-${item.normalizedDate}-${item.leads}`;
+
+        if (!uniqueMap.has(key)) {
+          uniqueMap.set(key, item);
+        }
+      });
+
+      const finalData = Array.from(uniqueMap.values());
+
+      setData(finalData);
       setLastRefreshed(new Date());
       setError(null);
     } catch (err) {
@@ -265,49 +264,22 @@ const App = () => {
     return uniqueNames.filter(name => name.toLowerCase().includes(term)).slice(0, 10);
   }, [data, searchTerm]);
 
+  // STEP 5: FIX FILTER LOGIC (STRICT)
   const filteredData = useMemo(() => {
-    if (!data.length) return [];
+    return data.filter(row => {
+      if (startDate && row.normalizedDate < startDate) return false;
+      if (endDate && row.normalizedDate > endDate) return false;
 
-    const start = startDate;
-    const end = endDate;
-    const term = searchTerm.toLowerCase().trim();
+      if (statusFilter !== "All Status" &&
+        row.status !== statusFilter) return false;
 
-    const result = data.filter(row => {
-      // 1. Date Filtering (Strictly following provided snippet)
-      const rowDate = convertSheetDate(row["Date"] || row["date"]);
-      
-      // Debug logging for row
-      console.log({
-        rawDate: row["Date"] || row["date"],
-        converted: rowDate,
-        start,
-        end
-      });
-
-      // Filter Logic from snippet
-      if (!rowDate) {
-        // If no date, we keep it as requested in previous logic (return true)
-      } else {
-        if (start && rowDate < start) return false;
-        if (end && rowDate > end) return false;
-      }
-
-      // Re-applying other filters
-      // 2. Status filter
-      if (statusFilter !== 'All Status') {
-        const itemStatus = (row.status || '').toLowerCase();
-        if (itemStatus !== statusFilter.toLowerCase()) return false;
-      }
-
-      // 3. Search / Campaign filter
-      const n = (row.campaign || '').toLowerCase();
-      if (term && !n.includes(term)) return false;
+      if (searchTerm &&
+        !row.campaign.toLowerCase().includes(searchTerm.toLowerCase()))
+        return false;
 
       return true;
     });
-
-    return result;
-  }, [data, searchTerm, statusFilter, startDate, endDate]);
+  }, [data, startDate, endDate, statusFilter, searchTerm]);
 
   // Handle Sorting Separately
   const sortedData = useMemo(() => {
@@ -320,9 +292,6 @@ const App = () => {
         if (sortConfig.key === 'date') {
           valA = a.normalizedDate || '';
           valB = b.normalizedDate || '';
-        } else if (typeof valA === 'string' && !isNaN(parseNumber(valA))) {
-          valA = parseNumber(valA);
-          valB = parseNumber(valB);
         }
 
         if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -333,22 +302,25 @@ const App = () => {
     return result;
   }, [filteredData, sortConfig]);
 
-  // KPI Calculations - Derived ONLY from filteredData
+  // STEP 4: FIX KPI CALCULATION
   const stats = useMemo(() => {
-    // Explicitly parse to prevent any string concatenation bugs as requested
-    const totalLeads = filteredData.reduce((sum, row) => sum + parseNumber(row.leads || row["Leads"]), 0);
-    const totalClicks = filteredData.reduce((sum, row) => sum + parseNumber(row.clicks || row["Clicks"]), 0);
-    const totalReach = filteredData.reduce((sum, row) => sum + parseNumber(row.reach || row["Reach"]), 0);
-    const totalSpend = filteredData.reduce((sum, row) => sum + parseNumber(row.spend || row["Spend"]), 0);
-    const avgCPL = totalLeads > 0 ? totalSpend / totalLeads : 0;
+    const totalLeads = filteredData.reduce((sum, row) => sum + row.leads, 0);
+    const totalClicks = filteredData.reduce((sum, row) => sum + row.clicks, 0);
+    const totalReach = filteredData.reduce((sum, row) => sum + row.reach, 0);
+    const totalSpend = filteredData.reduce((sum, row) => sum + row.spend, 0);
 
-    // DEBUG LOGS REQUESTED
-    console.log("RAW DATA:", data.length);
-    console.log("FILTERED DATA:", filteredData.length);
+    // STEP 9: DEBUG VALIDATION
+    console.log("DATA LENGTH:", data.length);
+    console.log("FILTERED LENGTH:", filteredData.length);
     console.log("TOTAL LEADS:", totalLeads);
-    console.log('KPI Aggregates:', { totalLeads, totalClicks, totalReach, totalSpend, avgCPL });
 
-    return { totalLeads, totalClicks, totalReach, totalSpend, avgCPL };
+    return {
+      totalLeads,
+      totalClicks,
+      totalReach,
+      totalSpend,
+      avgCPL: totalLeads > 0 ? totalSpend / totalLeads : 0
+    };
   }, [filteredData, data.length]);
 
   // Chart Data preparation
@@ -357,7 +329,7 @@ const App = () => {
       .sort((a, b) => b.leads - a.leads)
       .slice(0, 8)
       .map(item => ({
-        name: item.name.substring(0, 15) + '...',
+        name: item.campaign.substring(0, 15) + '...',
         leads: item.leads
       }));
   }, [filteredData]);
@@ -392,9 +364,9 @@ const App = () => {
   const insights = useMemo(() => {
     if (filteredData.length === 0) return null;
 
-    const campaignsWithLeads = filteredData.filter(d => d.leads > 0 && d.cpl > 0);
-    const best = campaignsWithLeads.length > 0 ? campaignsWithLeads.reduce((prev, curr) => prev.cpl < curr.cpl ? prev : curr) : null;
-    const worst = campaignsWithLeads.length > 0 ? campaignsWithLeads.reduce((prev, curr) => prev.cpl > curr.cpl ? prev : curr) : null;
+    const campaignsWithLeads = filteredData.filter(d => d.leads > 0 && (d.spend / d.leads) > 0);
+    const best = campaignsWithLeads.length > 0 ? campaignsWithLeads.reduce((prev, curr) => (prev.spend / prev.leads) < (curr.spend / curr.leads) ? prev : curr) : null;
+    const worst = campaignsWithLeads.length > 0 ? campaignsWithLeads.reduce((prev, curr) => (prev.spend / prev.leads) > (curr.spend / curr.leads) ? prev : curr) : null;
     const lowLeadsHighSpend = filteredData.filter(d => d.spend > 1000 && d.leads < 5);
 
     return { best, worst, lowLeadsHighSpend };
@@ -499,13 +471,42 @@ const App = () => {
               </p>
             </div>
             <button
-              id="sync-button"
-              onClick={fetchData}
-              className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors text-sm font-medium shadow-lg shadow-primary-500/20"
-            >
-              <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
-              Sync Data
-            </button>
+               id="sync-button"
+               onClick={fetchData}
+               className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors text-sm font-medium shadow-lg shadow-primary-500/20"
+             >
+               <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
+               Sync Data
+             </button>
+             
+             <button
+               id="export-csv-button"
+               onClick={() => {
+                 const headers = ["Campaign", "Date", "Status", "Leads", "Clicks", "Reach", "Spend"];
+                 const rows = filteredData.map(item => [
+                   item.campaign,
+                   item.normalizedDate,
+                   item.status,
+                   item.leads,
+                   item.clicks,
+                   item.reach,
+                   item.spend
+                 ]);
+                 const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+                 const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+                 const link = document.createElement("a");
+                 const url = URL.createObjectURL(blob);
+                 link.setAttribute("href", url);
+                 link.setAttribute("download", `dashboard_export_${activeDataset}.csv`);
+                 link.style.visibility = 'hidden';
+                 document.body.appendChild(link);
+                 link.click();
+                 document.body.removeChild(link);
+               }}
+               className="flex items-center gap-2 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors text-sm font-medium shadow-lg shadow-emerald-500/20"
+             >
+               Download CSV
+             </button>
           </div>
         </div>
       </header>
@@ -600,8 +601,42 @@ const App = () => {
             </AnimatePresence>
           </div>
 
-            <div className="flex items-center gap-4 w-full lg:w-auto">
-              <div className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5">
+            <div className="flex flex-wrap items-center gap-4 w-full lg:w-auto">
+              <div className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5 overflow-x-auto">
+                <div className="flex gap-1 mr-2 border-r border-slate-200 dark:border-slate-800 pr-2">
+                  <button
+                    onClick={() => {
+                      const today = new Date().toISOString().split('T')[0];
+                      setStartDate(today);
+                      setEndDate(today);
+                    }}
+                    className="px-2 py-1 text-[10px] font-bold uppercase rounded bg-slate-100 dark:bg-slate-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 text-slate-600 dark:text-slate-400 transition-colors"
+                  >
+                    Today
+                  </button>
+                  <button
+                    onClick={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() - 7);
+                      setStartDate(d.toISOString().split('T')[0]);
+                      setEndDate(new Date().toISOString().split('T')[0]);
+                    }}
+                    className="px-2 py-1 text-[10px] font-bold uppercase rounded bg-slate-100 dark:bg-slate-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 text-slate-600 dark:text-slate-400 transition-colors"
+                  >
+                    7D
+                  </button>
+                  <button
+                    onClick={() => {
+                      const d = new Date();
+                      d.setDate(d.getDate() - 30);
+                      setStartDate(d.toISOString().split('T')[0]);
+                      setEndDate(new Date().toISOString().split('T')[0]);
+                    }}
+                    className="px-2 py-1 text-[10px] font-bold uppercase rounded bg-slate-100 dark:bg-slate-800 hover:bg-primary-100 dark:hover:bg-primary-900/30 text-slate-600 dark:text-slate-400 transition-colors"
+                  >
+                    30D
+                  </button>
+                </div>
                 <span className="text-xs font-semibold text-slate-400 uppercase">From</span>
                 <input
                   id="start-date-input"
@@ -624,7 +659,7 @@ const App = () => {
                 <Filter className="text-slate-400 w-5 h-5 ml-2" />
                 <select
                   id="status-filter-select"
-                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary-500"
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary-500 text-sm"
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
                 >
@@ -780,36 +815,28 @@ const App = () => {
             <table className="w-full text-left border-separate border-spacing-0 min-w-[2000px]">
               <thead className="sticky top-0 z-30 bg-white dark:bg-slate-900 shadow-sm transition-colors">
                 <tr>
-                  <th onClick={() => handleSort('name')} className="sticky left-0 z-40 bg-white dark:bg-slate-900 pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
-                    <span className="flex items-center gap-1">Campaign Name {sortConfig.key === 'name' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
+                  <th onClick={() => handleSort('campaign')} className="sticky left-0 z-40 bg-white dark:bg-slate-900 pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
+                    <span className="flex items-center gap-1">Campaign Name {sortConfig.key === 'campaign' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
                   </th>
-                  <th onClick={() => handleSort('date')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
-                    <span className="flex items-center gap-1">Date {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
+                  <th onClick={() => handleSort('normalizedDate')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
+                    <span className="flex items-center gap-1">Date {sortConfig.key === 'normalizedDate' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
                   </th>
                   <th onClick={() => handleSort('status')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
                     <span className="flex items-center gap-1">Status {sortConfig.key === 'status' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
                   </th>
-                  <th onClick={() => handleSort('Ad delivery')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
-                    <span className="flex items-center gap-1">Delivery {sortConfig.key === 'Ad delivery' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
+                  <th className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider border-b border-slate-100 dark:border-slate-800">Delivery</th>
+                  <th onClick={() => handleSort('spend')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
+                    <span className="flex items-center gap-1">Spend {sortConfig.key === 'spend' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
                   </th>
-                  <th onClick={() => handleSort('Daily ad set budget')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
-                    <span className="flex items-center gap-1">Daily Budget {sortConfig.key === 'Daily ad set budget' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
-                  </th>
-                  <th onClick={() => handleSort('Remaining budget')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
-                    <span className="flex items-center gap-1">Remaining {sortConfig.key === 'Remaining budget' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
-                  </th>
+                  <th className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider border-b border-slate-100 dark:border-slate-800">Remaining</th>
                   <th onClick={() => handleSort('leads')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
                     <span className="flex items-center gap-1">Leads {sortConfig.key === 'leads' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
                   </th>
-                  <th onClick={() => handleSort('cpl')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
-                    <span className="flex items-center gap-1">CPL {sortConfig.key === 'cpl' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
-                  </th>
+                  <th className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider border-b border-slate-100 dark:border-slate-800">CPL</th>
                   <th onClick={() => handleSort('reach')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
                     <span className="flex items-center gap-1">Reach {sortConfig.key === 'reach' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
                   </th>
-                  <th onClick={() => handleSort('Impressions')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
-                    <span className="flex items-center gap-1">Impressions {sortConfig.key === 'Impressions' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
-                  </th>
+                  <th className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider border-b border-slate-100 dark:border-slate-800">Impressions</th>
                   <th onClick={() => handleSort('clicks')} className="pb-4 pt-2 px-4 font-semibold text-slate-500 uppercase text-xs tracking-wider cursor-pointer hover:text-primary-500 group border-b border-slate-100 dark:border-slate-800">
                     <span className="flex items-center gap-1">Link Clicks {sortConfig.key === 'clicks' && (sortConfig.direction === 'asc' ? '↑' : '↓')}</span>
                   </th>
@@ -824,8 +851,8 @@ const App = () => {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800 bg-white dark:bg-slate-900/5 transition-colors">
                 {paginatedData.map((campaign) => (
                   <tr key={campaign.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors group">
-                    <td className="sticky left-0 z-20 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/90 py-4 px-4 text-sm font-medium text-slate-900 dark:text-white max-w-[200px] truncate shadow-[2px_0_5px_rgba(0,0,0,0.05)] border-b border-slate-100 dark:border-slate-800" title={campaign.name}>
-                      {campaign.name}
+                    <td className="sticky left-0 z-20 bg-white dark:bg-slate-900 group-hover:bg-slate-50 dark:group-hover:bg-slate-800/90 py-4 px-4 text-sm font-medium text-slate-900 dark:text-white max-w-[200px] truncate shadow-[2px_0_5px_rgba(0,0,0,0.05)] border-b border-slate-100 dark:border-slate-800" title={campaign.campaign}>
+                      {campaign.campaign}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap border-b border-slate-100 dark:border-slate-800">
                       {formatDisplayDate(campaign?.normalizedDate)}
@@ -839,46 +866,46 @@ const App = () => {
                       </span>
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign?.['Ad delivery'] || '-'}
+                      -
                     </td>
                     <td className="py-4 px-4 text-sm font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign?.['Daily ad set budget'] ? formatCurrency(parseNumber(campaign?.['Daily ad set budget'])) : '-'}
+                      {campaign?.spend ? formatCurrency(campaign.spend) : '-'}
                     </td>
                     <td className="py-4 px-4 text-sm font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign?.['Remaining budget'] ? formatCurrency(parseNumber(campaign?.['Remaining budget'])) : '-'}
+                      -
                     </td>
                     <td className="py-4 px-4 text-sm font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800">
-                      {formatNumber(campaign?.leads)}
+                      {formatNumber(campaign.leads)}
                     </td>
                     <td className="py-4 px-4 text-sm font-semibold text-primary-600 dark:text-primary-400 border-b border-slate-100 dark:border-slate-800">
-                      {formatCurrency(campaign?.cpl)}
+                      {formatCurrency(campaign.spend / (campaign.leads || 1))}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {formatNumber(campaign?.reach)}
+                      {formatNumber(campaign.reach)}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {campaign?.Impressions ? formatNumber(parseNumber(campaign?.Impressions)) : '-'}
+                      -
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {formatNumber(campaign?.clicks)}
+                      {formatNumber(campaign.clicks)}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign?.region}
+                      {campaign.region}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {campaign?.Objective || '-'}
+                      -
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {campaign?.['Results Type'] || '-'}
+                      -
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign?.['Creative object type'] || '-'}
+                      -
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign?.['Campaign start time'] || '-'}
+                      -
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign?.['Campaign end time'] || '-'}
+                      -
                     </td>
                   </tr>
                 ))}

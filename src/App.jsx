@@ -30,11 +30,17 @@ const DATASETS = {
 
 // --- Helper Functions ---
 const parseNumber = (val) => {
-  if (val === undefined || val === null || val === '') return 0;
+  if (val === undefined || val === null || val === '' || val === ' ') return 0;
   if (typeof val === 'number') return val;
-  // Remove ₹ symbol, commas, and any non-numeric chars except . and -
-  const cleaned = val.toString().replace(/[₹,]/g, '').replace(/[^0-9.-]/g, '');
-  const parsed = parseFloat(cleaned);
+  
+  // Clean specifically for currency and standard marketing fields
+  // Matches user requested: value.toString().replace(/₹|,/g, "").trim()
+  const cleaned = val.toString()
+    .replace(/[₹,]/g, '')     // Remove currency and commas
+    .replace(/[^0-9.-]/g, '') // Remove everything else except numbers and dots
+    .trim();
+    
+  const parsed = Number(cleaned);
   return isNaN(parsed) ? 0 : parsed;
 };
 
@@ -218,9 +224,9 @@ const App = () => {
   }, [data]);
 
   useEffect(() => {
-    clearFilters();
     fetchData();
-    const interval = setInterval(fetchData, 5 * 60 * 1000);
+    // Auto refresh every 5 minutes (300,000ms)
+    const interval = setInterval(fetchData, 300000);
     return () => clearInterval(interval);
   }, [activeDataset]);
 
@@ -329,16 +335,21 @@ const App = () => {
 
   // KPI Calculations - Derived ONLY from filteredData
   const stats = useMemo(() => {
-    const totalLeads = filteredData.reduce((acc, curr) => acc + (curr.leads || 0), 0);
-    const totalClicks = filteredData.reduce((acc, curr) => acc + (curr.clicks || 0), 0);
-    const totalReach = filteredData.reduce((acc, curr) => acc + (curr.reach || 0), 0);
-    const totalSpend = filteredData.reduce((acc, curr) => acc + (curr.spend || 0), 0);
+    // Explicitly parse to prevent any string concatenation bugs as requested
+    const totalLeads = filteredData.reduce((sum, row) => sum + parseNumber(row.leads || row["Leads"]), 0);
+    const totalClicks = filteredData.reduce((sum, row) => sum + parseNumber(row.clicks || row["Clicks"]), 0);
+    const totalReach = filteredData.reduce((sum, row) => sum + parseNumber(row.reach || row["Reach"]), 0);
+    const totalSpend = filteredData.reduce((sum, row) => sum + parseNumber(row.spend || row["Spend"]), 0);
     const avgCPL = totalLeads > 0 ? totalSpend / totalLeads : 0;
 
-    console.log('KPI Values:', { totalLeads, totalClicks, totalReach, totalSpend, avgCPL });
+    // DEBUG LOGS REQUESTED
+    console.log("RAW DATA:", data.length);
+    console.log("FILTERED DATA:", filteredData.length);
+    console.log("TOTAL LEADS:", totalLeads);
+    console.log('KPI Aggregates:', { totalLeads, totalClicks, totalReach, totalSpend, avgCPL });
 
     return { totalLeads, totalClicks, totalReach, totalSpend, avgCPL };
-  }, [filteredData]);
+  }, [filteredData, data.length]);
 
   // Chart Data preparation
   const chartDataLeadsByCampaign = useMemo(() => {

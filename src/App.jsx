@@ -29,17 +29,13 @@ const DATASETS = {
 };
 
 // --- Helper Functions ---
-const cleanCurrency = (val) => {
-  if (!val || val === '') return 0;
-  return parseFloat(val.toString().replace(/[₹,]/g, '')) || 0;
-};
-
-const cleanNumber = (val) => {
+const parseNumber = (val) => {
   if (val === undefined || val === null || val === '') return 0;
   if (typeof val === 'number') return val;
-  // Keep only digits, dots, and negative signs
-  const cleaned = val.toString().replace(/[^0-9.-]/g, '');
-  return parseFloat(cleaned) || 0;
+  // Remove ₹ symbol, commas, and any non-numeric chars except . and -
+  const cleaned = val.toString().replace(/[₹,]/g, '').replace(/[^0-9.-]/g, '');
+  const parsed = parseFloat(cleaned);
+  return isNaN(parsed) ? 0 : parsed;
 };
 
 const formatCurrency = (val) => {
@@ -62,33 +58,22 @@ function parseSheetDate(dateStr) {
   const s = dateStr.trim();
   if (!s || s.toLowerCase() === 'no date') return null;
 
-  // Split by common separators (- or / or .)
+  // Expected format: MM/DD/YYYY
   const parts = s.split(/[-/.]/);
   if (parts.length !== 3) return null;
 
-  let y, m, d;
+  // Try to parse as MM/DD/YYYY first as requested
+  let m = parseInt(parts[0]);
+  let d = parseInt(parts[1]);
+  let y = parseInt(parts[2]);
 
-  // Case 1: YYYY-MM-DD (standard)
-  if (parts[0].length === 4) {
-    y = parseInt(parts[0]);
-    m = parseInt(parts[1]);
-    d = parseInt(parts[2]);
-  } 
-  // Case 2: DD-MM-YYYY or MM-DD-YYYY or DD-MM-YY
-  else {
-    d = parseInt(parts[0]);
-    m = parseInt(parts[1]);
-    y = parseInt(parts[2]);
+  // Handle 2-digit year
+  if (y < 100) y += 2000;
 
-    // Handle 2-digit year
-    if (y < 100) {
-      y += 2000;
-    }
-
-    // Heuristic for M/D/Y (if month > 12, swap)
-    if (m > 12 && d <= 12) {
-      [m, d] = [d, m];
-    }
+  // Basic validation for MM/DD/YYYY
+  if (m > 12) {
+    // If first part is > 12, it's likely DD/MM/YYYY
+    [m, d] = [d, m];
   }
 
   const result = new Date(y, m - 1, d);
@@ -185,7 +170,6 @@ const App = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      // Cache busting: add timestamp to ensure we get the latest sheet data
       const baseUrl = DATASETS[activeDataset].url;
       const syncUrl = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}cache_bust=${Date.now()}`;
       const response = await axios.get(syncUrl);
@@ -194,30 +178,41 @@ const App = () => {
         throw new Error('Invalid data format received from sync source.');
       }
 
-      const cleaned = response.data.map((item, index) => {
-        const campaign = item.Campaign || item['Campaign name'] || item['Campaign Name'] || 'Unnamed';
-        const reach = cleanNumber(item.Reach || item.reach || 0);
-        const clicks = cleanNumber(item.Clicks || item['Link clicks'] || item.clicks || 0);
-        const leads = cleanNumber(item.Leads || item.leads || item['Total Leads'] || 0);
-        const spend = cleanNumber(item.Spend || item.Cost || item['Daily ad set budget'] || item.spend || 0);
-        const cpl = leads > 0 ? (spend / leads) : (cleanNumber(item['Cost per lead'] || item['CPL'] || 0));
-        const statusRaw = item['Campaign configured status'] || item.Status || item.status || 'Active';
+      console.log(`Raw data length for ${activeDataset}:`, response.data.length);
 
-        return {
-          ...item,
-          id: index,
-          name: campaign,
-          campaign,
-          status: statusRaw,
-          leads,
-          cpl,
-          reach,
-          clicks,
-          spend,
-          region: item.Region || item.region || 'Unknown',
-          date: item.Date || item.date || 'No Date'
-        };
-      });
+      // Clean and Deduplicate
+      const seen = new Set();
+      const cleaned = response.data
+        .filter(item => {
+          const key = `${item.Date}-${item.Campaign}-${item.Reach}-${item.Spend}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        })
+        .map((item, index) => {
+          const campaign = item.Campaign || item['Campaign name'] || item['Campaign Name'] || 'Unnamed';
+          const reach = parseNumber(item.Reach || item.reach || 0);
+          const clicks = parseNumber(item.Clicks || item['Link clicks'] || item.clicks || 0);
+          const leads = parseNumber(item.Leads || item.leads || item['Total Leads'] || 0);
+          const spend = parseNumber(item.Spend || item.Cost || item['Daily ad set budget'] || item.spend || 0);
+          const cpl = leads > 0 ? (spend / leads) : (parseNumber(item['Cost per lead'] || item['CPL'] || 0));
+          const statusRaw = item['Campaign configured status'] || item.Status || item.status || 'Active';
+
+          return {
+            ...item,
+            id: `${activeDataset}-${index}`,
+            name: campaign,
+            campaign,
+            status: statusRaw,
+            leads,
+            cpl,
+            reach,
+            clicks,
+            spend,
+            region: item.Region || item.region || 'Unknown',
+            date: item.Date || item.date || 'No Date'
+          };
+        });
 
       setData(cleaned);
       setLastRefreshed(new Date());
@@ -296,31 +291,35 @@ const App = () => {
     if (!data.length) return [];
 
     const term = searchTerm.toLowerCase().trim();
-    const fromKey = startDate ? getDateKey(parseDate(startDate)) : null;
-    const toKey = endDate ? getDateKey(parseDate(endDate)) : null;
+    // Use ISO string for comparative filtering instead of custom key
+    const fromDate = startDate ? new Date(startDate) : null;
+    const toDate = endDate ? new Date(endDate) : null;
+
+    if (fromDate) fromDate.setHours(0, 0, 0, 0);
+    if (toDate) toDate.setHours(23, 59, 59, 999);
 
     let result = data.filter(item => {
-      // 1. Search filter
-      const n = (item.name || '').toLowerCase();
-      if (term && !n.includes(term)) return false;
+      // 1. Date filtering (CRITICAL: check first)
+      const recordDate = parseSheetDate(item.date);
+      if (!recordDate) return false;
       
-      // 2. Status filter (case-insensitive)
+      if (fromDate && recordDate < fromDate) return false;
+      if (toDate && recordDate > toDate) return false;
+
+      // 2. Status filter
       if (statusFilter !== 'All Status') {
         const itemStatus = (item.status || '').toLowerCase();
         if (itemStatus !== statusFilter.toLowerCase()) return false;
       }
 
-      // 3. Date filtering (inclusive range)
-      const recordDate = parseSheetDate(item.date);
-      if (!recordDate) return false;
-      
-      const rowKey = getDateKey(recordDate);
-
-      if (fromKey && rowKey < fromKey) return false;
-      if (toKey && rowKey > toKey) return false;
+      // 3. Search / Campaign filter
+      const n = (item.name || '').toLowerCase();
+      if (term && !n.includes(term)) return false;
 
       return true;
     });
+
+    console.log('Filtered data length:', result.length);
 
     if (sortConfig.key) {
       result = [...result].sort((a, b) => {
@@ -330,6 +329,9 @@ const App = () => {
         if (sortConfig.key === 'date') {
           valA = parseDate(valA)?.getTime() || 0;
           valB = parseDate(valB)?.getTime() || 0;
+        } else if (typeof valA === 'string' && !isNaN(parseNumber(valA))) {
+          valA = parseNumber(valA);
+          valB = parseNumber(valB);
         }
 
         if (valA < valB) return sortConfig.direction === 'asc' ? -1 : 1;
@@ -340,13 +342,15 @@ const App = () => {
     return result;
   }, [data, searchTerm, statusFilter, sortConfig, startDate, endDate]);
 
-  // KPI Calculations
+  // KPI Calculations - Derived ONLY from filteredData
   const stats = useMemo(() => {
-    const totalLeads = filteredData.reduce((acc, curr) => acc + (Number(curr.leads) || 0), 0);
-    const totalClicks = filteredData.reduce((acc, curr) => acc + (Number(curr.clicks) || 0), 0);
-    const totalReach = filteredData.reduce((acc, curr) => acc + (Number(curr.reach) || 0), 0);
-    const totalSpend = filteredData.reduce((acc, curr) => acc + (Number(curr.spend) || 0), 0);
+    const totalLeads = filteredData.reduce((acc, curr) => acc + (curr.leads || 0), 0);
+    const totalClicks = filteredData.reduce((acc, curr) => acc + (curr.clicks || 0), 0);
+    const totalReach = filteredData.reduce((acc, curr) => acc + (curr.reach || 0), 0);
+    const totalSpend = filteredData.reduce((acc, curr) => acc + (curr.spend || 0), 0);
     const avgCPL = totalLeads > 0 ? totalSpend / totalLeads : 0;
+
+    console.log('KPI Values:', { totalLeads, totalClicks, totalReach, totalSpend, avgCPL });
 
     return { totalLeads, totalClicks, totalReach, totalSpend, avgCPL };
   }, [filteredData]);
@@ -450,6 +454,7 @@ const App = () => {
               {Object.entries(DATASETS).map(([key, dataset]) => (
                 <button
                   key={key}
+                  id={`dataset-switch-${key}`}
                   onClick={() => setActiveDataset(key)}
                   className={cn(
                     "px-4 py-1.5 rounded-lg text-sm font-medium transition-all",
@@ -463,6 +468,7 @@ const App = () => {
               ))}
             </div>
             <button
+              id="theme-toggle"
               onClick={() => setDarkMode(!darkMode)}
               className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors"
             >
@@ -475,6 +481,7 @@ const App = () => {
               </p>
             </div>
             <button
+              id="sync-button"
               onClick={fetchData}
               className="flex items-center gap-2 px-4 py-2 bg-primary-600 hover:bg-primary-700 text-white rounded-lg transition-colors text-sm font-medium shadow-lg shadow-primary-500/20"
             >
@@ -509,6 +516,7 @@ const App = () => {
           <div className="relative flex-1 w-full" ref={searchRef}>
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
             <input
+              id="search-input"
               type="text"
               placeholder="Search or select campaign..."
               className="w-full pl-10 pr-10 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl focus:ring-2 focus:ring-primary-500 transition-all outline-none"
@@ -521,6 +529,7 @@ const App = () => {
             />
             {searchTerm && (
               <button
+                id="clear-search"
                 onClick={() => {
                   setSearchTerm('');
                   setShowDropdown(false);
@@ -568,6 +577,7 @@ const App = () => {
             <div className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5">
               <span className="text-xs font-semibold text-slate-400 uppercase">From</span>
               <input
+                id="start-date-input"
                 type="date"
                 className="bg-transparent text-sm outline-none dark:text-white"
                 value={startDate}
@@ -575,6 +585,7 @@ const App = () => {
               />
               <span className="text-xs font-semibold text-slate-400 uppercase ml-2">To</span>
               <input
+                id="end-date-input"
                 type="date"
                 className="bg-transparent text-sm outline-none dark:text-white"
                 value={endDate}
@@ -585,6 +596,7 @@ const App = () => {
             <div className="flex items-center gap-2">
               <Filter className="text-slate-400 w-5 h-5 ml-2" />
               <select
+                id="status-filter-select"
                 className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary-500"
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
@@ -792,10 +804,10 @@ const App = () => {
                       {campaign['Ad delivery'] || '-'}
                     </td>
                     <td className="py-4 px-4 text-sm font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign['Daily ad set budget'] ? formatCurrency(cleanCurrency(campaign['Daily ad set budget'])) : '-'}
+                      {campaign['Daily ad set budget'] ? formatCurrency(parseNumber(campaign['Daily ad set budget'])) : '-'}
                     </td>
                     <td className="py-4 px-4 text-sm font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign['Remaining budget'] ? formatCurrency(cleanCurrency(campaign['Remaining budget'])) : '-'}
+                      {campaign['Remaining budget'] ? formatCurrency(parseNumber(campaign['Remaining budget'])) : '-'}
                     </td>
                     <td className="py-4 px-4 text-sm font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800">
                       {formatNumber(campaign.leads)}
@@ -807,7 +819,7 @@ const App = () => {
                       {formatNumber(campaign.reach)}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {campaign.Impressions ? formatNumber(cleanNumber(campaign.Impressions)) : '-'}
+                      {campaign.Impressions ? formatNumber(parseNumber(campaign.Impressions)) : '-'}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
                       {formatNumber(campaign.clicks)}
@@ -843,16 +855,20 @@ const App = () => {
             </p>
             <div className="flex gap-2">
               <button
+                id="prev-page-button"
                 onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
                 disabled={currentPage === 1}
-                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                aria-label="Previous Page"
               >
                 <ChevronLeft className="w-5 h-5" />
               </button>
               <button
+                id="next-page-button"
                 onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
                 disabled={currentPage === totalPages}
-                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                aria-label="Next Page"
               >
                 <ChevronRight className="w-5 h-5" />
               </button>

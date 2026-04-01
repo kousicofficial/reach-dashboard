@@ -51,10 +51,9 @@ const formatNumber = (val) => {
 };
 
 // USER REQUESTED FIX: parseSheetDate
-function parseSheetDate(dateStr) {
+function parseCustomDate(dateStr) {
   if (!dateStr) return null;
   if (dateStr instanceof Date) return dateStr;
-  if (typeof dateStr !== 'string') return null;
   const s = dateStr.trim();
   if (!s || s.toLowerCase() === 'no date') return null;
 
@@ -62,33 +61,27 @@ function parseSheetDate(dateStr) {
   const parts = s.split(/[-/.]/);
   if (parts.length !== 3) return null;
 
-  // Try to parse as MM/DD/YYYY first as requested
-  let m = parseInt(parts[0]);
-  let d = parseInt(parts[1]);
-  let y = parseInt(parts[2]);
+  const m = parseInt(parts[0]);
+  const d = parseInt(parts[1]);
+  const y = parseInt(parts[2]);
 
-  // Handle 2-digit year
-  if (y < 100) y += 2000;
+  // Handle 2-digit year (if any)
+  const fullYear = y < 100 ? 2000 + y : y;
 
-  // Basic validation for MM/DD/YYYY
-  if (m > 12) {
-    // If first part is > 12, it's likely DD/MM/YYYY
-    [m, d] = [d, m];
-  }
-
-  const result = new Date(y, m - 1, d);
+  // Use (Year, Month-1, Day) constructor to avoid UTC/timezone issues
+  const result = new Date(fullYear, m - 1, d);
   return isNaN(result.getTime()) ? null : result;
 }
 
 const formatDate = (dateStr) => {
-  const date = parseSheetDate(dateStr);
+  const date = parseCustomDate(dateStr);
   if (!date) return '-';
   return `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${date.getFullYear()}`;
 };
 
-const parseDate = parseSheetDate;
+const parseDate = parseCustomDate;
 const normalizeDate = (dateStr) => {
-  const d = parseSheetDate(dateStr);
+  const d = parseCustomDate(dateStr);
   if (!d) return '';
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
@@ -225,20 +218,10 @@ const App = () => {
     }
   };
 
-  // Auto-set the date range to the latest date found in the sheet
+  // Remove auto-setting logic that may cause "No Data" issues by being too restrictive
   useEffect(() => {
-    if (data.length > 0) {
-      const dates = data.map(d => parseSheetDate(d.date)).filter(Boolean);
-      if (dates.length > 0) {
-        const latest = new Date(Math.max(...dates.map(d => d.getTime())));
-        const formatted = latest.toISOString().split('T')[0];
-        // Only set if user hasn't interacted or it's the initial load
-        if (startDate === '2026-03-27' && endDate === '2026-03-27') {
-          setStartDate(formatted);
-          setEndDate(formatted);
-        }
-      }
-    }
+    // We let the dashboard show all data by default (startDate/endDate are '')
+    // This ensures full visibility on first load as requested.
   }, [data]);
 
   useEffect(() => {
@@ -291,7 +274,6 @@ const App = () => {
     if (!data.length) return [];
 
     const term = searchTerm.toLowerCase().trim();
-    // Use ISO string for comparative filtering instead of custom key
     const fromDate = startDate ? new Date(startDate) : null;
     const toDate = endDate ? new Date(endDate) : null;
 
@@ -299,8 +281,14 @@ const App = () => {
     if (toDate) toDate.setHours(23, 59, 59, 999);
 
     let result = data.filter(item => {
-      // 1. Date filtering (CRITICAL: check first)
-      const recordDate = parseSheetDate(item.date);
+      // 1. Date filtering (Proper parsing of MM/DD/YYYY)
+      const recordDate = parseCustomDate(item.date);
+      
+      // LOGGING FOR DEBUGGING
+      if (startDate || endDate) {
+        // console.log(`Comparing RowDate: ${recordDate?.toISOString()} with Filter: ${fromDate?.toISOString()} to ${toDate?.toISOString()}`);
+      }
+
       if (!recordDate) return false;
       
       if (fromDate && recordDate < fromDate) return false;
@@ -319,7 +307,7 @@ const App = () => {
       return true;
     });
 
-    console.log('Filtered data length:', result.length);
+    console.log(`Filtered Data: ${result.length} rows (Start: ${startDate}, End: ${endDate}, Status: ${statusFilter}, Search: ${searchTerm})`);
 
     if (sortConfig.key) {
       result = [...result].sort((a, b) => {
@@ -494,12 +482,21 @@ const App = () => {
 
       <main className="max-w-7xl mx-auto px-4 md:px-8 mt-8">
 
-        {/* --- KPI Cards --- */}
-        {filteredData.length === 0 ? (
+        {/* --- KPI Cards & Filter Status --- */}
+        {filteredData.length === 0 && (searchTerm || statusFilter !== 'All Status' || startDate || endDate) ? (
           <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-6 mb-8 text-center">
             <AlertCircle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
-            <p className="text-amber-800 dark:text-amber-300 font-medium">No data available for the selected filters</p>
-            <p className="text-amber-600 dark:text-amber-400 text-sm">Try selecting a different date range or clearing your search.</p>
+            <p className="text-amber-800 dark:text-amber-300 font-medium">No results match your active filters</p>
+            <p className="text-amber-600 dark:text-amber-400 text-sm">Try clearing filters or selecting a wider date range.</p>
+          </div>
+        ) : filteredData.length === 0 && data.length > 0 ? (
+           <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-6 mb-8 text-center">
+            <p className="text-blue-800 dark:text-blue-300 font-medium">Loading filtered data...</p>
+          </div>
+        ) : filteredData.length === 0 && data.length === 0 ? (
+          <div className="bg-slate-100 dark:bg-slate-800 rounded-xl p-6 mb-8 text-center border border-dashed border-slate-300 dark:border-slate-700">
+            <RefreshCw className="w-8 h-8 text-slate-400 mx-auto mb-2 animate-spin" />
+            <p className="text-slate-500 dark:text-slate-400">Fetching initial campaign data...</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-8">

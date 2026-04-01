@@ -151,11 +151,15 @@ const App = () => {
   }, []);
 
   const fetchData = async () => {
+    setLoading(true);
     try {
-      setLoading(true);
       const baseUrl = DATASETS[activeDataset].url;
-      const syncUrl = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}cache_bust=${Date.now()}`;
-      const response = await axios.get(syncUrl);
+      const response = await axios.get(baseUrl);
+
+      if (!response.data || !Array.isArray(response.data)) {
+        setData([]);
+        return;
+      }
 
       console.log(`[SYNC] Raw data length for ${activeDataset}:`, response.data.length);
 
@@ -163,19 +167,20 @@ const App = () => {
       const seen = new Set();
       const cleaned = response.data
         .filter(item => {
+          if (!item) return false;
           const key = `${item.Date}-${item.Campaign}-${item.Reach}-${item.Spend}`;
           if (seen.has(key)) return false;
           seen.add(key);
           return true;
         })
         .map((item, index) => {
-          const campaign = item.Campaign || item['Campaign name'] || item['Campaign Name'] || 'Unnamed';
-          const reach = parseNumber(item.Reach || item.reach || 0);
-          const clicks = parseNumber(item.Clicks || item['Link clicks'] || item.clicks || 0);
-          const leads = parseNumber(item.Leads || item.leads || item['Total Leads'] || 0);
-          const spend = parseNumber(item.Spend || item.Cost || item['Daily ad set budget'] || item.spend || 0);
-          const cpl = leads > 0 ? (spend / leads) : (parseNumber(item['Cost per lead'] || item['CPL'] || 0));
-          const statusRaw = item['Campaign configured status'] || item.Status || item.status || 'Active';
+          const campaign = item?.Campaign || item?.['Campaign name'] || item?.['Campaign Name'] || 'Unnamed';
+          const reach = parseNumber(item?.Reach || item?.reach || 0);
+          const clicks = parseNumber(item?.Clicks || item?.['Link clicks'] || item?.clicks || 0);
+          const leads = parseNumber(item?.Leads || item?.leads || item?.['Total Leads'] || 0);
+          const spend = parseNumber(item?.Spend || item?.Cost || item?.['Daily ad set budget'] || item?.spend || 0);
+          const cpl = leads > 0 ? (spend / leads) : (parseNumber(item?.['Cost per lead'] || item?.['CPL'] || 0));
+          const statusRaw = item?.['Campaign configured status'] || item?.Status || item?.status || 'Active';
 
           return {
             ...item,
@@ -188,9 +193,9 @@ const App = () => {
             reach,
             clicks,
             spend,
-            region: item.Region || item.region || 'Unknown',
-            date: item.Date || item.date || 'No Date',
-            normalizedDate: convertSheetDate(item.Date || item.date)
+            region: item?.Region || item?.region || 'Unknown',
+            date: item?.Date || item?.date || 'No Date',
+            normalizedDate: convertSheetDate(item?.Date || item?.date)
           };
         });
 
@@ -199,7 +204,8 @@ const App = () => {
       setError(null);
     } catch (err) {
       setError('Failed to fetch data. Please check your connection.');
-      console.error(err);
+      console.error('API Error:', err);
+      setData([]);
     } finally {
       setLoading(false);
     }
@@ -390,6 +396,10 @@ const App = () => {
     return sortedData.slice(start, start + itemsPerPage);
   }, [sortedData, currentPage, itemsPerPage]);
 
+  // Table Pagination Logic
+  const totalPagesCount = Math.ceil(sortedData.length / itemsPerPage);
+  const displayPages = totalPagesCount || 1;
+
   if (loading && data.length === 0) {
     return (
       <div className="min-h-screen bg-slate-50 dark:bg-slate-950 transition-colors duration-300">
@@ -409,6 +419,24 @@ const App = () => {
           </div>
           <Skeleton className="w-full h-[500px] rounded-premium" />
         </main>
+      </div>
+    );
+  }
+
+  if (error && data.length === 0) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-slate-50 dark:bg-slate-950">
+        <div className="text-center p-8 bg-white dark:bg-slate-900 rounded-3xl shadow-xl max-w-md border border-slate-200 dark:border-slate-800">
+          <AlertCircle className="w-12 h-12 text-rose-500 mx-auto mb-4" />
+          <h2 className="text-xl font-bold text-slate-900 dark:text-white mb-2">Something went wrong</h2>
+          <p className="text-slate-500 dark:text-slate-400 mb-6">{error}</p>
+          <button 
+            onClick={fetchData}
+            className="px-6 py-2 bg-primary-600 text-white rounded-xl hover:bg-primary-700 transition-colors"
+          >
+            Try Again
+          </button>
+        </div>
       </div>
     );
   }
@@ -789,94 +817,89 @@ const App = () => {
                       {campaign.name}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap border-b border-slate-100 dark:border-slate-800">
-                      {formatDisplayDate(campaign.normalizedDate)}
+                      {formatDisplayDate(campaign?.normalizedDate)}
                     </td>
                     <td className="py-4 px-4 text-sm border-b border-slate-100 dark:border-slate-800">
                       <span className={cn(
                         "px-2.5 py-1 rounded-full text-xs font-semibold whitespace-nowrap",
-                        campaign.status === 'Active' ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
+                        campaign?.status === 'Active' ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400" : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400"
                       )}>
-                        {campaign.status}
+                        {campaign?.status}
                       </span>
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign['Ad delivery'] || '-'}
+                      {campaign?.['Ad delivery'] || '-'}
                     </td>
                     <td className="py-4 px-4 text-sm font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign['Daily ad set budget'] ? formatCurrency(parseNumber(campaign['Daily ad set budget'])) : '-'}
+                      {campaign?.['Daily ad set budget'] ? formatCurrency(parseNumber(campaign?.['Daily ad set budget'])) : '-'}
                     </td>
                     <td className="py-4 px-4 text-sm font-semibold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign['Remaining budget'] ? formatCurrency(parseNumber(campaign['Remaining budget'])) : '-'}
+                      {campaign?.['Remaining budget'] ? formatCurrency(parseNumber(campaign?.['Remaining budget'])) : '-'}
                     </td>
                     <td className="py-4 px-4 text-sm font-bold text-slate-900 dark:text-white border-b border-slate-100 dark:border-slate-800">
-                      {formatNumber(campaign.leads)}
+                      {formatNumber(campaign?.leads)}
                     </td>
                     <td className="py-4 px-4 text-sm font-semibold text-primary-600 dark:text-primary-400 border-b border-slate-100 dark:border-slate-800">
-                      {formatCurrency(campaign.cpl)}
+                      {formatCurrency(campaign?.cpl)}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {formatNumber(campaign.reach)}
+                      {formatNumber(campaign?.reach)}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {campaign.Impressions ? formatNumber(parseNumber(campaign.Impressions)) : '-'}
+                      {campaign?.Impressions ? formatNumber(parseNumber(campaign?.Impressions)) : '-'}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {formatNumber(campaign.clicks)}
+                      {formatNumber(campaign?.clicks)}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign.region}
+                      {campaign?.region}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {campaign.Objective || '-'}
+                      {campaign?.Objective || '-'}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                      {campaign['Results Type'] || '-'}
+                      {campaign?.['Results Type'] || '-'}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign['Creative object type'] || '-'}
+                      {campaign?.['Creative object type'] || '-'}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign['Campaign start time'] || '-'}
+                      {campaign?.['Campaign start time'] || '-'}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-600 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 whitespace-nowrap">
-                      {campaign['Campaign end time'] || '-'}
+                      {campaign?.['Campaign end time'] || '-'}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-
-  // Table Pagination
-  const totalPagesCount = Math.ceil(sortedData.length / itemsPerPage);
-  const displayPages = totalPagesCount || 1;
-
-  return (
-    <div className="mt-6 flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-6">
-      <p className="text-sm text-slate-500">
-        Showing <span className="font-medium text-slate-700 dark:text-slate-300">{(currentPage - 1) * itemsPerPage + 1}</span> to <span className="font-medium text-slate-700 dark:text-slate-300">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> of <span className="font-medium text-slate-700 dark:text-slate-300">{filteredData.length}</span> results
-      </p>
-      <div className="flex gap-2">
-        <button
-          id="prev-page-button"
-          onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-          disabled={currentPage === 1}
-          className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-          aria-label="Previous Page"
-        >
-          <ChevronLeft className="w-5 h-5" />
-        </button>
-        <button
-          id="next-page-button"
-          onClick={() => setCurrentPage(p => Math.min(displayPages, p + 1))}
-          disabled={currentPage === displayPages}
-          className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-          aria-label="Next Page"
-        >
-          <ChevronRight className="w-5 h-5" />
-        </button>
-      </div>
-    </div>
+          {/* Table Pagination */}
+          <div className="mt-6 flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-6">
+            <p className="text-sm text-slate-500">
+              Showing <span className="font-medium text-slate-700 dark:text-slate-300">{(currentPage - 1) * itemsPerPage + 1}</span> to <span className="font-medium text-slate-700 dark:text-slate-300">{Math.min(currentPage * itemsPerPage, filteredData?.length || 0)}</span> of <span className="font-medium text-slate-700 dark:text-slate-300">{filteredData?.length || 0}</span> results
+            </p>
+            <div className="flex gap-2">
+              <button
+                id="prev-page-button"
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                aria-label="Previous Page"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <button
+                id="next-page-button"
+                onClick={() => setCurrentPage(p => Math.min(displayPages, p + 1))}
+                disabled={currentPage === displayPages}
+                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+                aria-label="Next Page"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
         </div>
       </main>
 

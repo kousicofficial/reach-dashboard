@@ -50,58 +50,29 @@ const formatNumber = (val) => {
   return new Intl.NumberFormat('en-IN').format(val);
 };
 
-// USER REQUESTED FIX: parseSheetDate
-function parseCustomDate(dateStr) {
-  if (!dateStr) return null;
-  if (dateStr instanceof Date) return new Date(dateStr.getFullYear(), dateStr.getMonth(), dateStr.getDate());
-  const s = dateStr.toString().trim();
+function convertSheetDate(dateStr) {
+  if (!dateStr || typeof dateStr !== 'string') return null;
+  const s = dateStr.trim();
   if (!s || s.toLowerCase() === 'no date') return null;
 
-  // Expected format: MM/DD/YYYY (e.g. 3/24/2026)
-  const parts = s.split(/[-/.]/);
+  const parts = s.split("/");
   if (parts.length !== 3) return null;
 
-  const m = parseInt(parts[0], 10);
-  const d = parseInt(parts[1], 10);
-  const y = parseInt(parts[2], 10);
+  const [month, day, year] = parts;
+  // Handle 2-digit years if they exist, though user says YYYY
+  const fullYear = year.length === 2 ? `20${year}` : year;
 
-  const fullYear = y < 100 ? 2000 + y : y;
-  
-  // Return local date at midnight to ensure pure date comparison
-  return new Date(fullYear, m - 1, d);
+  return `${fullYear}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
 }
 
-function normalizeInputDate(dateStr) {
-  if (!dateStr) return null;
-  // input date is typically YYYY-MM-DD
-  const parts = dateStr.split('-');
-  if (parts.length === 3) {
-    const y = parseInt(parts[0], 10);
-    const m = parseInt(parts[1], 10);
-    const d = parseInt(parts[2], 10);
-    return new Date(y, m - 1, d);
-  }
-  const d = new Date(dateStr);
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate());
-}
-
-const formatDate = (dateStr) => {
-  const date = parseCustomDate(dateStr);
-  if (!date) return '-';
-  return `${String(date.getDate()).padStart(2, '0')}-${String(date.getMonth() + 1).padStart(2, '0')}-${date.getFullYear()}`;
+const formatDisplayDate = (isoDate) => {
+  if (!isoDate || isoDate === '-') return '-';
+  const parts = isoDate.split('-');
+  if (parts.length !== 3) return isoDate;
+  const [y, m, d] = parts;
+  return `${d}-${m}-${y}`;
 };
 
-const parseDate = parseCustomDate;
-const normalizeDate = (dateStr) => {
-  const d = parseCustomDate(dateStr);
-  if (!d) return '';
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-};
-
-const getDateKey = (d) => {
-  if (!d) return 0;
-  return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
-};
 
 // --- Components ---
 
@@ -159,6 +130,13 @@ const App = () => {
   const [darkMode, setDarkMode] = useState(false);
   const [lastRefreshed, setLastRefreshed] = useState(new Date());
 
+  const clearFilters = () => {
+    setSearchTerm('');
+    setStatusFilter('All Status');
+    setStartDate('');
+    setEndDate('');
+  };
+
   const searchRef = React.useRef(null);
 
   // Close dropdown on click outside
@@ -179,11 +157,7 @@ const App = () => {
       const syncUrl = `${baseUrl}${baseUrl.includes('?') ? '&' : '?'}cache_bust=${Date.now()}`;
       const response = await axios.get(syncUrl);
 
-      if (!response.data || !Array.isArray(response.data)) {
-        throw new Error('Invalid data format received from sync source.');
-      }
-
-      console.log(`Raw data length for ${activeDataset}:`, response.data.length);
+      console.log(`[SYNC] Raw data length for ${activeDataset}:`, response.data.length);
 
       // Clean and Deduplicate
       const seen = new Set();
@@ -215,7 +189,8 @@ const App = () => {
             clicks,
             spend,
             region: item.Region || item.region || 'Unknown',
-            date: item.Date || item.date || 'No Date'
+            date: item.Date || item.date || 'No Date',
+            normalizedDate: convertSheetDate(item.Date || item.date)
           };
         });
 
@@ -237,6 +212,7 @@ const App = () => {
   }, [data]);
 
   useEffect(() => {
+    clearFilters();
     fetchData();
     const interval = setInterval(fetchData, 5 * 60 * 1000);
     return () => clearInterval(interval);
@@ -268,65 +244,70 @@ const App = () => {
     setSortConfig({ key, direction });
   };
 
-  // --- Filtering & Sorting Logic ---
-  const uniqueCampaigns = useMemo(() => {
-    if (!data.length) return [];
-    const names = data.map(item => item.name);
-    return [...new Set(names)].sort((a, b) => a.localeCompare(b));
-  }, [data]);
-
   const filteredDropdownItems = useMemo(() => {
-    if (!searchTerm) return uniqueCampaigns;
-    return uniqueCampaigns.filter(name =>
-      name.toLowerCase().includes(searchTerm.toLowerCase())
-    );
-  }, [uniqueCampaigns, searchTerm]);
+    const term = searchTerm.toLowerCase().trim();
+    if (!data.length) return [];
+    
+    const uniqueNames = Array.from(new Set(data.map(item => item.campaign).filter(Boolean)));
+    if (!term) return uniqueNames.slice(0, 10);
+    return uniqueNames.filter(name => name.toLowerCase().includes(term)).slice(0, 10);
+  }, [data, searchTerm]);
 
   const filteredData = useMemo(() => {
     if (!data.length) return [];
 
+    const start = startDate;
+    const end = endDate;
     const term = searchTerm.toLowerCase().trim();
-    const start = normalizeInputDate(startDate);
-    const end = normalizeInputDate(endDate);
 
-    let result = data.filter(item => {
-      // 1. Date filtering (Strict Local Date comparison)
-      const rowDate = parseCustomDate(item.date);
+    const result = data.filter(row => {
+      // 1. Date Filtering (Strictly following provided snippet)
+      const rowDate = convertSheetDate(row["Date"] || row["date"]);
       
-      if (!rowDate) return true; // Show rows with missing dates as requested
+      // Debug logging for row
+      console.log({
+        rawDate: row["Date"] || row["date"],
+        converted: rowDate,
+        start,
+        end
+      });
 
-      // Debugging logs for first match or if filters active
-      if (startDate || endDate) {
-        // Only log matching or close dates to avoid console spam
-        // console.log(`Row: ${rowDate.toDateString()} | Start: ${start?.toDateString()} | End: ${end?.toDateString()}`);
+      // Filter Logic from snippet
+      if (!rowDate) {
+        // If no date, we keep it as requested in previous logic (return true)
+      } else {
+        if (start && rowDate < start) return false;
+        if (end && rowDate > end) return false;
       }
-      
-      if (start && rowDate < start) return false;
-      if (end && rowDate > end) return false;
 
+      // Re-applying other filters
       // 2. Status filter
       if (statusFilter !== 'All Status') {
-        const itemStatus = (item.status || '').toLowerCase();
+        const itemStatus = (row.status || '').toLowerCase();
         if (itemStatus !== statusFilter.toLowerCase()) return false;
       }
 
       // 3. Search / Campaign filter
-      const n = (item.name || '').toLowerCase();
+      const n = (row.campaign || '').toLowerCase();
       if (term && !n.includes(term)) return false;
 
       return true;
     });
 
-    console.log(`Filter Stats: ${result.length} active rows. [Range: ${start?.toDateString() || 'All'} - ${end?.toDateString() || 'All'}]`);
+    return result;
+  }, [data, searchTerm, statusFilter, startDate, endDate]);
 
+  // Handle Sorting Separately
+  const sortedData = useMemo(() => {
+    let result = [...filteredData];
     if (sortConfig.key) {
-      result = [...result].sort((a, b) => {
+      result.sort((a, b) => {
         let valA = a[sortConfig.key];
         let valB = b[sortConfig.key];
 
         if (sortConfig.key === 'date') {
-          valA = parseDate(valA)?.getTime() || 0;
-          valB = parseDate(valB)?.getTime() || 0;
+          valA = a.normalizedDate || '';
+          valB = b.normalizedDate || '';
         } else if (typeof valA === 'string' && !isNaN(parseNumber(valA))) {
           valA = parseNumber(valA);
           valB = parseNumber(valB);
@@ -338,7 +319,7 @@ const App = () => {
       });
     }
     return result;
-  }, [data, searchTerm, statusFilter, sortConfig, startDate, endDate]);
+  }, [filteredData, sortConfig]);
 
   // KPI Calculations - Derived ONLY from filteredData
   const stats = useMemo(() => {
@@ -366,8 +347,8 @@ const App = () => {
 
   const chartDataLeadsOverTime = useMemo(() => {
     const grouped = filteredData.reduce((acc, curr) => {
-      const normalized = formatDate(curr.date);
-      if (!normalized || normalized === '-') return acc;
+      const normalized = curr.normalizedDate;
+      if (!normalized) return acc;
       if (!acc[normalized]) acc[normalized] = 0;
       acc[normalized] += curr.leads;
       return acc;
@@ -376,7 +357,7 @@ const App = () => {
     return Object.keys(grouped).map(date => ({
       date,
       leads: grouped[date]
-    })).sort((a, b) => (parseDate(a.date)?.getTime() || 0) - (parseDate(b.date)?.getTime() || 0));
+    })).sort((a, b) => a.date.localeCompare(b.date));
   }, [filteredData]);
 
   const chartDataStatus = useMemo(() => {
@@ -403,11 +384,11 @@ const App = () => {
   }, [filteredData]);
 
   // Table Pagination
-  const totalPages = Math.ceil(filteredData.length / itemsPerPage);
+  const totalPages = Math.ceil(sortedData.length / itemsPerPage);
   const paginatedData = useMemo(() => {
     const start = (currentPage - 1) * itemsPerPage;
-    return filteredData.slice(start, start + itemsPerPage);
-  }, [filteredData, currentPage, itemsPerPage]);
+    return sortedData.slice(start, start + itemsPerPage);
+  }, [sortedData, currentPage, itemsPerPage]);
 
   if (loading && data.length === 0) {
     return (
@@ -580,41 +561,52 @@ const App = () => {
             </AnimatePresence>
           </div>
 
-          <div className="flex flex-wrap items-center gap-4 w-full lg:w-auto">
-            <div className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5">
-              <span className="text-xs font-semibold text-slate-400 uppercase">From</span>
-              <input
-                id="start-date-input"
-                type="date"
-                className="bg-transparent text-sm outline-none dark:text-white"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-              />
-              <span className="text-xs font-semibold text-slate-400 uppercase ml-2">To</span>
-              <input
-                id="end-date-input"
-                type="date"
-                className="bg-transparent text-sm outline-none dark:text-white"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-              />
-            </div>
+            <div className="flex items-center gap-4 w-full lg:w-auto">
+              <div className="flex items-center gap-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-3 py-1.5">
+                <span className="text-xs font-semibold text-slate-400 uppercase">From</span>
+                <input
+                  id="start-date-input"
+                  type="date"
+                  className="bg-transparent text-sm outline-none dark:text-white"
+                  value={startDate}
+                  onChange={(e) => setStartDate(e.target.value)}
+                />
+                <span className="text-xs font-semibold text-slate-400 uppercase ml-2">To</span>
+                <input
+                  id="end-date-input"
+                  type="date"
+                  className="bg-transparent text-sm outline-none dark:text-white"
+                  value={endDate}
+                  onChange={(e) => setEndDate(e.target.value)}
+                />
+              </div>
 
-            <div className="flex items-center gap-2">
-              <Filter className="text-slate-400 w-5 h-5 ml-2" />
-              <select
-                id="status-filter-select"
-                className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary-500"
-                value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
-              >
-                <option value="All Status">All Status</option>
-                <option value="Active">Active</option>
-                <option value="Paused">Paused</option>
-                <option value="Archived">Archived</option>
-              </select>
+              <div className="flex items-center gap-2">
+                <Filter className="text-slate-400 w-5 h-5 ml-2" />
+                <select
+                  id="status-filter-select"
+                  className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 outline-none focus:ring-2 focus:ring-primary-500"
+                  value={statusFilter}
+                  onChange={(e) => setStatusFilter(e.target.value)}
+                >
+                  <option value="All Status">All Status</option>
+                  <option value="Active">Active</option>
+                  <option value="Paused">Paused</option>
+                  <option value="Archived">Archived</option>
+                </select>
+              </div>
+
+              {(searchTerm || statusFilter !== 'All Status' || startDate || endDate) && (
+                <button
+                  id="clear-filters"
+                  onClick={clearFilters}
+                  className="px-4 py-2.5 text-sm font-medium text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20 rounded-xl transition-colors flex items-center gap-2"
+                >
+                  <X className="w-4 h-4" />
+                  Clear All
+                </button>
+              )}
             </div>
-          </div>
         </div>
 
         {/* --- Charts --- */}
@@ -797,7 +789,7 @@ const App = () => {
                       {campaign.name}
                     </td>
                     <td className="py-4 px-4 text-sm text-slate-500 dark:text-slate-400 font-medium whitespace-nowrap border-b border-slate-100 dark:border-slate-800">
-                      {formatDate(campaign.date)}
+                      {formatDisplayDate(campaign.normalizedDate)}
                     </td>
                     <td className="py-4 px-4 text-sm border-b border-slate-100 dark:border-slate-800">
                       <span className={cn(
@@ -855,32 +847,36 @@ const App = () => {
             </table>
           </div>
 
-          {/* Pagination */}
-          <div className="mt-6 flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-6">
-            <p className="text-sm text-slate-500">
-              Showing <span className="font-medium text-slate-700 dark:text-slate-300">{(currentPage - 1) * itemsPerPage + 1}</span> to <span className="font-medium text-slate-700 dark:text-slate-300">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> of <span className="font-medium text-slate-700 dark:text-slate-300">{filteredData.length}</span> results
-            </p>
-            <div className="flex gap-2">
-              <button
-                id="prev-page-button"
-                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                aria-label="Previous Page"
-              >
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-              <button
-                id="next-page-button"
-                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages}
-                className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
-                aria-label="Next Page"
-              >
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
+  // Table Pagination
+  const totalPagesCount = Math.ceil(sortedData.length / itemsPerPage);
+  const displayPages = totalPagesCount || 1;
+
+  return (
+    <div className="mt-6 flex items-center justify-between border-t border-slate-100 dark:border-slate-800 pt-6">
+      <p className="text-sm text-slate-500">
+        Showing <span className="font-medium text-slate-700 dark:text-slate-300">{(currentPage - 1) * itemsPerPage + 1}</span> to <span className="font-medium text-slate-700 dark:text-slate-300">{Math.min(currentPage * itemsPerPage, filteredData.length)}</span> of <span className="font-medium text-slate-700 dark:text-slate-300">{filteredData.length}</span> results
+      </p>
+      <div className="flex gap-2">
+        <button
+          id="prev-page-button"
+          onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+          disabled={currentPage === 1}
+          className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          aria-label="Previous Page"
+        >
+          <ChevronLeft className="w-5 h-5" />
+        </button>
+        <button
+          id="next-page-button"
+          onClick={() => setCurrentPage(p => Math.min(displayPages, p + 1))}
+          disabled={currentPage === displayPages}
+          className="p-2 rounded-lg border border-slate-200 dark:border-slate-800 disabled:opacity-50 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+          aria-label="Next Page"
+        >
+          <ChevronRight className="w-5 h-5" />
+        </button>
+      </div>
+    </div>
         </div>
       </main>
 
